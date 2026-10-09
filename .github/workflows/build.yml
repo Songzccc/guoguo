@@ -126,18 +126,14 @@ jobs:
             expected="${ANDROID_SIGNING_CERT_SHA256:-3fdc07a2297421373607c098f9b847c1377d9266ee07003b9d7fda8c4b581d8a}"
             expected=$(printf '%s' "$expected" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')
             mode=release
-          else
-            if [ ! -f "$HOME/.android/debug.keystore" ]; then
-              echo "::error::预览签名文件不存在；无法核对本次构建使用的证书。"
+            if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::预期证书 SHA-256 格式不正确。"
               exit 1
             fi
-            expected=$(keytool -exportcert -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | sha256sum | awk '{print $1}')
+          else
+            expected=''
             mode=preview
-            echo "::warning::当前为临时调试签名的预览 APK，不是原作者正式签名版本；不同构建之间可能无法覆盖安装。"
-          fi
-          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::预期证书 SHA-256 格式不正确。"
-            exit 1
+            echo "::warning::当前为预览 APK；校验实际 APK 签名及本任务内各架构证书一致性，不验证原作者身份，也不保证跨构建覆盖安装。"
           fi
           shopt -s nullglob
           apks=(dist/android/*.apk)
@@ -153,8 +149,15 @@ jobs:
               exit 1
             fi
             printf '%s\n' "$output"
-            mapfile -t actual < <(printf '%s\n' "$output" | awk '/certificate SHA-256 digest:/ {sub(/^.*certificate SHA-256 digest:[[:space:]]*/, ""); gsub(/[[:space:]:]/, ""); print tolower($0)}' | sort -u)
-            if [ "${#actual[@]}" -ne 1 ] || [ "${actual[0]:-}" != "$expected" ]; then
+            mapfile -t actual < <(printf '%s\n' "$output" | awk '/^[[:space:]]*(Signer #[0-9]+|V[0-9]+ Signer):? certificate SHA-256 digest:/ {sub(/^.*certificate SHA-256 digest:[[:space:]]*/, ""); gsub(/[[:space:]:]/, ""); print tolower($0)}' | sort -u)
+            if [ "${#actual[@]}" -ne 1 ] || [[ ! "${actual[0]:-}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::APK 必须具有唯一且格式有效的签名证书 SHA-256。"
+              exit 1
+            fi
+            if [ "$mode" = preview ] && [ -z "$expected" ]; then
+              expected="${actual[0]}"
+            fi
+            if [ "${actual[0]}" != "$expected" ]; then
               echo "::error::APK 证书与本次 $mode 构建的预期证书不一致。"
               echo "预期 SHA-256：$expected"
               exit 1
